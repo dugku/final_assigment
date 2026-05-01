@@ -1,0 +1,27 @@
+void Update()
+    {
+        foreach (var key in new List<string>(lostTimers.Keys))
+        {
+            lostTimers[key] -= Time.deltaTime;
+    
+            if (lostTimers[key] <= 0f)
+            {
+                lostTimers.Remove(key);
+    
+                if (spawnedCharacters.TryGetValue(key, out CardCharacter character))
+                {
+                    if (character != null && !detachedCards.Contains(key))
+                    {
+                        character.gameObject.SetActive(false);
+                        Debug.Log($"[ITM] Hiding {key} after tracking was lost.");
+                    }
+                }
+            }
+        }
+    
+        foreach (var key in new List<string>(globalCooldowns.Keys))
+        {
+            globalCooldowns[key] -= Time.deltaTime;
+            if (globalCooldowns[key] <= 0f) globalCooldowns.Remove(key);
+        }
+    }
