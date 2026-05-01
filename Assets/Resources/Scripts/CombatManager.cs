@@ -34,16 +34,28 @@ public class CombatManager : MonoBehaviour
     public void FireProjectileOnly(CardCharacter attacker, CardCharacter target)
     {
         if (attacker == null) return;
+    
         if (attacker.projectilePrefab == null)
         {
             Debug.LogWarning($"[CombatManager] {attacker.characterName} has no projectile prefab.");
             return;
         }
-
+    
         Vector3 origin = attacker.GetProjectileSpawnPoint();
-        GameObject projGO = Instantiate(attacker.projectilePrefab, origin, Quaternion.identity);
+    
+        Quaternion spawnRotation = attacker.transform.rotation;
+    
+        if (target != null)
+        {
+            Vector3 dir = target.GetAimPoint() - origin;
+    
+            if (dir != Vector3.zero)
+                spawnRotation = Quaternion.LookRotation(dir.normalized);
+        }
+    
+        GameObject projGO = Instantiate(attacker.projectilePrefab, origin, spawnRotation);
         Projectile proj = projGO.GetComponent<Projectile>();
-
+    
         if (proj != null)
         {
             proj.InitializeVisualOnly(target, attacker.projectileSpeed, attacker.projectileColor);

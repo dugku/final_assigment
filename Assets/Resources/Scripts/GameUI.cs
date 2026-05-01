@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using UnityEngine.SceneManagement;
 
 /// <summary>
 /// Manages all in-game UI for the turn-based AR card game.
@@ -86,13 +87,46 @@ public class GameUI : MonoBehaviour
             return;
         }
 
-        if (passDeviceButton)    passDeviceButton.onClick.AddListener(OnPassDeviceConfirmed);
-        if (confirmAttackButton) confirmAttackButton.onClick.AddListener(() => gsm?.OnConfirmAttackPressed());
-        if (endTurnButton)       endTurnButton.onClick.AddListener(() => gsm?.OnEndTurnPressed());
+        if (passDeviceButton)
+        {
+            passDeviceButton.onClick.RemoveAllListeners();
+            passDeviceButton.onClick.AddListener(OnPassDeviceConfirmed);
+        }
 
-        // Wire attack slot buttons
-        if (attack1Button) attack1Button.onClick.AddListener(() => gsm?.OnSelectAttackSlot(1));
-        if (attack2Button) attack2Button.onClick.AddListener(() => gsm?.OnSelectAttackSlot(2));
+        if (confirmAttackButton)
+        {
+            confirmAttackButton.onClick.RemoveAllListeners();
+            confirmAttackButton.onClick.AddListener(() => gsm?.OnConfirmAttackPressed());
+        }
+
+        if (endTurnButton)
+        {
+            endTurnButton.onClick.RemoveAllListeners();
+            endTurnButton.onClick.AddListener(() => gsm?.OnEndTurnPressed());
+        }
+
+        if (attack1Button)
+        {
+            attack1Button.onClick.RemoveAllListeners();
+            attack1Button.onClick.AddListener(() => gsm?.OnSelectAttackSlot(1));
+        }
+
+        if (attack2Button)
+        {
+            attack2Button.onClick.RemoveAllListeners();
+            attack2Button.onClick.AddListener(() => gsm?.OnSelectAttackSlot(2));
+        }
+
+        // FIX: Wire Play Again button.
+        if (restartButton)
+        {
+            restartButton.onClick.RemoveAllListeners();
+            restartButton.onClick.AddListener(RestartScene);
+        }
+        else
+        {
+            Debug.LogWarning("[GameUI] Restart button is not assigned.");
+        }
 
         initialized = true;
         Debug.Log("[GameUI] Initialized.");
@@ -142,6 +176,7 @@ public class GameUI : MonoBehaviour
         if (!initialized) return;
         HideAllPanels();
         passDevicePanel?.SetActive(true);
+
         if (passDeviceText != null)
             passDeviceText.text = $"Pass the device to\n{nextPlayer.PlayerName}";
     }
@@ -151,6 +186,7 @@ public class GameUI : MonoBehaviour
         if (!initialized) return;
         HideAllPanels();
         endGamePanel?.SetActive(true);
+
         if (winnerText != null)
             winnerText.text = winner != null ? $"{winner.PlayerName} Wins!" : "Draw!";
     }
@@ -158,28 +194,29 @@ public class GameUI : MonoBehaviour
     public void RefreshUI(PlayerState player, bool attackUnlocked)
     {
         if (!initialized) return;
+
         currentPlayer = player;
         UpdateStats();
         BuildTurnPanel(attackUnlocked);
+
         attackSelectionPanel?.SetActive(false);
         enemyCardPanel?.SetActive(false);
         confirmAttackButton?.gameObject.SetActive(false);
     }
 
-    /// <summary>Step 1 — Card tapped, show Attack 1 / Attack 2 buttons.</summary>
     public void OnAttackerSelected(CardCharacter card)
     {
         if (!initialized) return;
 
-        // Update attack button labels with name, damage and mana cost
         if (attack1Label != null)
             attack1Label.text = $"{card.attack1Name}\n{card.attack1Damage} dmg  |  {card.attack1ManaCost} mana";
+
         if (attack2Label != null)
             attack2Label.text = $"{card.attack2Name}\n{card.attack2Damage} dmg  |  {card.attack2ManaCost} mana";
 
-        // Grey out attacks player can't afford
         if (attack1Button != null)
             attack1Button.interactable = gsm.CurrentPlayer.CanAfford(card.attack1ManaCost);
+
         if (attack2Button != null)
             attack2Button.interactable = gsm.CurrentPlayer.CanAfford(card.attack2ManaCost);
 
@@ -190,7 +227,6 @@ public class GameUI : MonoBehaviour
         SetInstructions($"{card.characterName} — choose an attack");
     }
 
-    /// <summary>Step 2 — Attack chosen, show enemy targets.</summary>
     public void OnAttackSlotSelected(int slot, string attackName, float damage, int manaCost)
     {
         attackSelectionPanel?.SetActive(false);
@@ -200,10 +236,10 @@ public class GameUI : MonoBehaviour
         confirmAttackButton?.gameObject.SetActive(false);
     }
 
-    /// <summary>Step 3 — Target chosen, show Confirm button.</summary>
     public void OnTargetSelected(CardCharacter card)
     {
         if (!initialized) return;
+
         SetInstructions($"Attack {card.characterName}? Tap Confirm!");
         confirmAttackButton?.gameObject.SetActive(true);
     }
@@ -211,7 +247,10 @@ public class GameUI : MonoBehaviour
     public void ShowMessage(string message)
     {
         if (messageText == null) return;
-        if (messageCoroutine != null) StopCoroutine(messageCoroutine);
+
+        if (messageCoroutine != null)
+            StopCoroutine(messageCoroutine);
+
         messageCoroutine = StartCoroutine(ShowMessageCoroutine(message));
     }
 
@@ -219,52 +258,87 @@ public class GameUI : MonoBehaviour
 
     private void OnPassDeviceConfirmed() => gsm?.OnPassDeviceConfirmed();
 
+    private void RestartScene()
+    {
+        Debug.Log("[GameUI] Restarting scene.");
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+    }
+
     private void BuildTurnPanel(bool attackUnlocked)
     {
         if (currentPlayer == null) return;
 
-        BuildCardButtons(fieldCardContainer, currentPlayer.FieldCards,
-            card => gsm?.OnSelectAttacker(card), "Tap to Attack", attackUnlocked);
+        BuildCardButtons(
+            fieldCardContainer,
+            currentPlayer.FieldCards,
+            card => gsm?.OnSelectAttacker(card),
+            "Tap to Attack",
+            attackUnlocked
+        );
 
         bool hasDead = currentPlayer.DeadCards.Count > 0;
         deadCardPanel?.SetActive(hasDead);
+
         if (hasDead)
-            BuildCardButtons(deadCardContainer, currentPlayer.DeadCards,
-                card => gsm?.OnReviveCardPressed(card), "Revive", true);
+        {
+            BuildCardButtons(
+                deadCardContainer,
+                currentPlayer.DeadCards,
+                card => gsm?.OnReviveCardPressed(card),
+                "Revive",
+                true
+            );
+        }
     }
 
     private void BuildEnemyCards()
     {
         if (gsm == null) return;
+
         PlayerState opponent = gsm.OpponentPlayer;
 
         if (opponent.HasCardsOnField())
         {
-            BuildCardButtons(enemyCardContainer, opponent.FieldCards,
-                card => gsm.OnSelectTarget(card), "Target", true);
+            BuildCardButtons(
+                enemyCardContainer,
+                opponent.FieldCards,
+                card => gsm.OnSelectTarget(card),
+                "Target",
+                true
+            );
         }
         else
         {
             ClearContainer(enemyCardContainer);
+
             if (cardButtonPrefab != null && enemyCardContainer != null)
             {
                 GameObject btn = Instantiate(cardButtonPrefab, enemyCardContainer);
                 SetCardButtonText(btn, opponent.PlayerName, "Direct Attack");
                 btn.GetComponent<Button>()?.onClick.AddListener(
-                    () => gsm?.OnConfirmAttackPressed());
+                    () => gsm?.OnConfirmAttackPressed()
+                );
             }
         }
     }
 
-    private void BuildCardButtons(Transform container, List<CardCharacter> cards,
-        System.Action<CardCharacter> callback, string label, bool interactable)
+    private void BuildCardButtons(
+        Transform container,
+        List<CardCharacter> cards,
+        System.Action<CardCharacter> callback,
+        string label,
+        bool interactable
+    )
     {
         if (container == null || cardButtonPrefab == null) return;
+
         ClearContainer(container);
+
         foreach (CardCharacter card in cards)
         {
             GameObject btn = Instantiate(cardButtonPrefab, container);
             SetCardButtonText(btn, card.characterName, label);
+
             Button b = btn.GetComponent<Button>();
             if (b != null)
             {
@@ -278,6 +352,7 @@ public class GameUI : MonoBehaviour
     private void SetCardButtonText(GameObject btn, string title, string subtitle)
     {
         TextMeshProUGUI[] texts = btn.GetComponentsInChildren<TextMeshProUGUI>();
+
         if (texts.Length >= 1) texts[0].text = title;
         if (texts.Length >= 2) texts[1].text = subtitle;
     }
@@ -285,6 +360,7 @@ public class GameUI : MonoBehaviour
     private void ClearContainer(Transform container)
     {
         if (container == null) return;
+
         foreach (Transform child in container)
             Destroy(child.gameObject);
     }
@@ -292,10 +368,17 @@ public class GameUI : MonoBehaviour
     private void UpdateStats()
     {
         if (gsm == null || currentPlayer == null) return;
+
         PlayerState opponent = gsm.OpponentPlayer;
-        if (currentPlayerHP   != null) currentPlayerHP.text   = $"HP: {currentPlayer.CurrentHP}/{PlayerState.MaxHP}";
-        if (currentPlayerMana != null) currentPlayerMana.text = $"Mana: {currentPlayer.CurrentMana}/{PlayerState.MaxMana}";
-        if (opponentPlayerHP  != null) opponentPlayerHP.text  = $"{opponent.PlayerName}  HP: {opponent.CurrentHP}/{PlayerState.MaxHP}";
+
+        if (currentPlayerHP != null)
+            currentPlayerHP.text = $"HP: {currentPlayer.CurrentHP}/{PlayerState.MaxHP}";
+
+        if (currentPlayerMana != null)
+            currentPlayerMana.text = $"Mana: {currentPlayer.CurrentMana}/{PlayerState.MaxMana}";
+
+        if (opponentPlayerHP != null)
+            opponentPlayerHP.text = $"{opponent.PlayerName}  HP: {opponent.CurrentHP}/{PlayerState.MaxHP}";
     }
 
     private void HideAllPanels()
@@ -304,18 +387,32 @@ public class GameUI : MonoBehaviour
         turnPanel?.SetActive(false);
         endGamePanel?.SetActive(false);
         attackSelectionPanel?.SetActive(false);
+        enemyCardPanel?.SetActive(false);
+        deadCardPanel?.SetActive(false);
         messageText?.gameObject.SetActive(false);
     }
 
-    private void SetTurnBanner(string text) { if (turnBannerText != null) turnBannerText.text = text; }
-    private void SetInstructions(string text) { if (instructionsText != null) instructionsText.text = text; }
+    private void SetTurnBanner(string text)
+    {
+        if (turnBannerText != null)
+            turnBannerText.text = text;
+    }
+
+    private void SetInstructions(string text)
+    {
+        if (instructionsText != null)
+            instructionsText.text = text;
+    }
 
     private IEnumerator ShowMessageCoroutine(string message)
     {
         if (messageText == null) yield break;
+
         messageText.gameObject.SetActive(true);
         messageText.text = message;
+
         yield return new WaitForSeconds(2.5f);
+
         messageText.gameObject.SetActive(false);
     }
 }

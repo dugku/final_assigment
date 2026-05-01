@@ -157,42 +157,46 @@ public class ImageTrackingManager : MonoBehaviour
         string cardName = trackedImage.referenceImage.name;
         string trackableKey = MakeTrackableKey(trackedImage);
 
-        if (trackedImage.trackingState == TrackingState.Tracking)
-        {
-            /*
-             * If this physical marker is already claimed, only the same
-             * player/card key may interact with it.
-             */
-            if (claimedTrackables.TryGetValue(trackableKey, out string claimedByKey))
-            {
-                lostTimers.Remove(claimedByKey);
-
-                string currentKey = GetCurrentPlayerKey(cardName);
-
-                if (currentKey != claimedByKey)
-                {
-                    Debug.Log(
-                        $"[ITM] Ignoring tracked marker {cardName}. " +
-                        $"Physical marker is claimed by {claimedByKey}, current key is {currentKey}."
-                    );
-
-                    return;
-                }
-            }
-
-            TryHandleTrackedImage(trackedImage, "UPDATED");
-        }
-        else
+        // If tracking is lost, only update the lost timer. Do not spam logs.
+        if (trackedImage.trackingState != TrackingState.Tracking)
         {
             if (claimedTrackables.TryGetValue(trackableKey, out string claimedByKey))
             {
                 if (!lostTimers.ContainsKey(claimedByKey))
-                {
                     lostTimers[claimedByKey] = trackingLostGracePeriod;
-                    Debug.Log($"[ITM] Tracking lost: {claimedByKey}.");
-                }
             }
+
+            return;
         }
+
+        // If this physical marker is already claimed, do nothing.
+        // This prevents repeated "already on field" spam every frame.
+        if (claimedTrackables.TryGetValue(trackableKey, out string claimedByExistingKey))
+        {
+            lostTimers.Remove(claimedByExistingKey);
+            return;
+        }
+
+        // Fallback only:
+        // If ARFoundation somehow missed ADDED, allow UPDATED to place a new unclaimed card.
+        if (gameStateManager == null || gameStateManager.CurrentPlayer == null)
+            return; 
+
+        PlayerState currentPlayer = gameStateManager.CurrentPlayer;
+        int playerIndex = currentPlayer.PlayerIndex;
+        string key = MakeKey(playerIndex, cardName);
+
+        // Do not even call TryHandleTrackedImage if this card is already known.
+        if (spawnedCharacters.ContainsKey(key))
+            return;
+
+        if (scanCooldowns.ContainsKey(key))
+            return;
+
+        if (!IsCardAllowedForPlayer(playerIndex, cardName))
+            return;
+
+        TryHandleTrackedImage(trackedImage, "UPDATED-FIRST-SEEN");
     }
 
     private void HandleRemovedTrackedImage(ARTrackedImage trackedImage)
@@ -438,7 +442,7 @@ public class ImageTrackingManager : MonoBehaviour
 
         go.transform.SetParent(null, true);
         go.transform.position = trackedImage.transform.position;
-        go.transform.rotation = trackedImage.transform.rotation * Quaternion.Euler(0f, 180f, 0f);
+        go.transform.rotation = trackedImage.transform.rotation * Quaternion.Euler(0f, 90f, 0f);
 
         go.SetActive(true);
     }
