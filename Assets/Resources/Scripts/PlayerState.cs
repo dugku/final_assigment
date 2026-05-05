@@ -7,8 +7,8 @@ using UnityEngine;
 public class PlayerState
 {
     public const int MaxHP       = 100;
-    public const int MaxMana     = 10;
-    public const int ManaPerTurn = 3;
+    public const int MaxMana     = 20;
+    public const int ManaPerTurn = 5;
     public const int PlaceCost   = 3;
     public const int AttackCost  = 2;  // default / attack 1 cost
     public const int ReviveCost  = 4;

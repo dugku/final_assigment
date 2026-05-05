@@ -6,6 +6,8 @@ using UnityEngine.XR.ARSubsystems;
 public class ImageTrackingManager : MonoBehaviour
 {
     private ARTrackedImageManager ourTrackedImages;
+
+    [Header("Card Prefabs")]
     public GameObject[] ourModelPrefabs;
 
     [Header("References")]
@@ -19,51 +21,38 @@ public class ImageTrackingManager : MonoBehaviour
     [Header("Demo Lock Settings")]
     public int maxCardsPerPlayer = 2;
 
-    /*
-     * Player-specific card keys:
-     *
-     * 0:HoodedRouge = Player 1's Hooded Rogue
-     * 1:Paladin     = Player 2's Paladin
-     *
-     * This prevents both players from sharing the same CardCharacter instance.
-     */
-    private readonly Dictionary<string, GameObject> spawnedObjects =
-        new Dictionary<string, GameObject>();
-
-    private readonly Dictionary<string, CardCharacter> spawnedCharacters =
-        new Dictionary<string, CardCharacter>();
+    private readonly Dictionary<string, GameObject> spawnedObjects = new Dictionary<string, GameObject>();
+    private readonly Dictionary<string, CardCharacter> spawnedCharacters = new Dictionary<string, CardCharacter>();
+    private readonly Dictionary<string, float> scanCooldowns = new Dictionary<string, float>();
+    private readonly Dictionary<string, float> lostTimers = new Dictionary<string, float>();
 
     /*
-     * Prevents the same marker from triggering placement every frame.
-     * Key is playerIndex:cardName.
+     * This is intentionally strict again.
+     * A physical marker claimed by Player 1 should NOT later become Player 2's card.
      */
-    private readonly Dictionary<string, float> scanCooldowns =
-        new Dictionary<string, float>();
+    private readonly Dictionary<string, string> claimedTrackables = new Dictionary<string, string>();
 
-    /*
-     * Tracks temporary loss of image tracking.
-     * Key is playerIndex:cardName.
-     */
-    private readonly Dictionary<string, float> lostTimers =
-        new Dictionary<string, float>();
+    // Field cards are locked so AR image updates cannot move them.
+    // Death/revive unlocks them so they can be scanned again.
+    private readonly HashSet<string> lockedPlacedCards = new HashSet<string>();
 
-    /*
-     * Tracks ownership of a physical AR marker.
-     *
-     * Example:
-     * trackable id "ABC123" -> "0:HoodedRouge"
-     *
-     * This prevents Player 1's already-placed marker from becoming
-     * Player 2's card when the turn changes.
-     */
-    private readonly Dictionary<string, string> claimedTrackables =
-        new Dictionary<string, string>();
+    private const string VersionTag = "V5_REVERTED_DEMO_LOCK_SAFE";
 
-    void Awake()
+    private void Awake()
     {
-        Debug.Log("[ITM VERSION] DEMO_LOCKED_4_UNIQUE_CARDS_V1");
+        Debug.Log($"[ITM VERSION] {VersionTag}");
 
         ourTrackedImages = GetComponent<ARTrackedImageManager>();
+
+        if (ourTrackedImages == null)
+        {
+            Debug.LogError("[ITM] Missing ARTrackedImageManager on this GameObject.");
+        }
+        else if (ourTrackedImages.trackedImagePrefab != null)
+        {
+            Debug.LogWarning("[ITM] Clearing ARTrackedImageManager.trackedImagePrefab because this script spawns cards manually.");
+            ourTrackedImages.trackedImagePrefab = null;
+        }
 
         if (gameStateManager == null)
             gameStateManager = FindObjectOfType<GameStateManager>();
@@ -72,92 +61,78 @@ public class ImageTrackingManager : MonoBehaviour
             combatManager = FindObjectOfType<CombatManager>();
     }
 
-    void OnEnable()
+    private void OnEnable()
     {
         if (ourTrackedImages != null)
             ourTrackedImages.trackedImagesChanged += WhenTrackedImagesChange;
     }
 
-    void OnDisable()
+    private void OnDisable()
     {
         if (ourTrackedImages != null)
             ourTrackedImages.trackedImagesChanged -= WhenTrackedImagesChange;
     }
 
-    void Update()
+    private void Update()
     {
-        // Cooldowns stop repeated scans every frame.
+        TickScanCooldowns();
+        TickLostTrackingTimers();
+    }
+
+    private void TickScanCooldowns()
+    {
         foreach (string key in new List<string>(scanCooldowns.Keys))
         {
             scanCooldowns[key] -= Time.deltaTime;
-
             if (scanCooldowns[key] <= 0f)
                 scanCooldowns.Remove(key);
         }
+    }
 
-        // Tracking-lost grace timer.
+    private void TickLostTrackingTimers()
+    {
         foreach (string key in new List<string>(lostTimers.Keys))
         {
             lostTimers[key] -= Time.deltaTime;
+            if (lostTimers[key] > 0f)
+                continue;
 
-            if (lostTimers[key] <= 0f)
-            {
-                lostTimers.Remove(key);
+            lostTimers.Remove(key);
 
-                if (spawnedCharacters.TryGetValue(key, out CardCharacter character))
-                {
-                    if (character == null) continue;
+            if (!spawnedCharacters.TryGetValue(key, out CardCharacter character))
+                continue;
 
-                    /*
-                     * Do not hide placed field cards.
-                     * Once a card is placed, it should stay visible even
-                     * if AR tracking for the marker is lost.
-                     */
-                    bool isOnField =
-                        gameStateManager != null &&
-                        gameStateManager.Player1 != null &&
-                        gameStateManager.Player2 != null &&
-                        (
-                            gameStateManager.Player1.FieldCards.Contains(character) ||
-                            gameStateManager.Player2.FieldCards.Contains(character)
-                        );
+            if (character == null)
+                continue;
 
-                    if (!isOnField)
-                    {
-                        character.gameObject.SetActive(false);
-                        Debug.Log($"[ITM] Hiding {key} after tracking was lost.");
-                    }
-                }
-            }
+            // Never hide field cards. Placed cards should stay visible even if tracking is lost.
+            if (IsCardOnEitherField(character))
+                continue;
+
+            character.gameObject.SetActive(false);
+            Debug.Log($"[ITM] Hiding {key} after tracking was lost.");
         }
     }
 
     private void WhenTrackedImagesChange(ARTrackedImagesChangedEventArgs eventArgs)
     {
         foreach (ARTrackedImage trackedImage in eventArgs.added)
-        {
             TryHandleTrackedImage(trackedImage, "ADDED");
-        }
 
         foreach (ARTrackedImage trackedImage in eventArgs.updated)
-        {
             HandleUpdatedTrackedImage(trackedImage);
-        }
 
         foreach (ARTrackedImage trackedImage in eventArgs.removed)
-        {
             HandleRemovedTrackedImage(trackedImage);
-        }
     }
 
     private void HandleUpdatedTrackedImage(ARTrackedImage trackedImage)
     {
-        if (trackedImage == null) return;
+        if (trackedImage == null)
+            return;
 
-        string cardName = trackedImage.referenceImage.name;
         string trackableKey = MakeTrackableKey(trackedImage);
 
-        // If tracking is lost, only update the lost timer. Do not spam logs.
         if (trackedImage.trackingState != TrackingState.Tracking)
         {
             if (claimedTrackables.TryGetValue(trackableKey, out string claimedByKey))
@@ -169,25 +144,42 @@ public class ImageTrackingManager : MonoBehaviour
             return;
         }
 
-        // If this physical marker is already claimed, do nothing.
-        // This prevents repeated "already on field" spam every frame.
-        if (claimedTrackables.TryGetValue(trackableKey, out string claimedByExistingKey))
-        {
-            lostTimers.Remove(claimedByExistingKey);
-            return;
-        }
-
-        // Fallback only:
-        // If ARFoundation somehow missed ADDED, allow UPDATED to place a new unclaimed card.
         if (gameStateManager == null || gameStateManager.CurrentPlayer == null)
-            return; 
+            return;
 
+        string cardName = NormalizeCardName(trackedImage.referenceImage.name);
         PlayerState currentPlayer = gameStateManager.CurrentPlayer;
         int playerIndex = currentPlayer.PlayerIndex;
         string key = MakeKey(playerIndex, cardName);
 
-        // Do not even call TryHandleTrackedImage if this card is already known.
-        if (spawnedCharacters.ContainsKey(key))
+        /*
+         * Strict ownership stays on.
+         * If the physical marker belongs to the other player, ignore it.
+         * If it belongs to this same key and the card is in hand after revive,
+         * allow it to be scanned again.
+         */
+        if (claimedTrackables.TryGetValue(trackableKey, out string claimedByExistingKey))
+        {
+            if (claimedByExistingKey != key)
+            {
+                lostTimers.Remove(claimedByExistingKey);
+                return;
+            }
+
+            if (spawnedCharacters.TryGetValue(key, out CardCharacter existingCharacter))
+            {
+                if (IsCardOnEitherField(existingCharacter))
+                {
+                    lostTimers.Remove(key);
+                    return;
+                }
+
+                if (!currentPlayer.HandCards.Contains(existingCharacter))
+                    return;
+            }
+        }
+
+        if (lockedPlacedCards.Contains(key))
             return;
 
         if (scanCooldowns.ContainsKey(key))
@@ -196,23 +188,21 @@ public class ImageTrackingManager : MonoBehaviour
         if (!IsCardAllowedForPlayer(playerIndex, cardName))
             return;
 
-        TryHandleTrackedImage(trackedImage, "UPDATED-FIRST-SEEN");
+        TryHandleTrackedImage(trackedImage, "UPDATED");
     }
 
     private void HandleRemovedTrackedImage(ARTrackedImage trackedImage)
     {
-        if (trackedImage == null) return;
+        if (trackedImage == null)
+            return;
 
-        string cardName = trackedImage.referenceImage.name;
+        string cardName = NormalizeCardName(trackedImage.referenceImage.name);
         string trackableKey = MakeTrackableKey(trackedImage);
 
         Debug.Log($"[ITM] REMOVED event: {cardName}");
 
-        /*
-         * Do NOT remove claimedTrackables here.
-         * If you remove the claim immediately, the same physical marker can
-         * come back during the other player's turn and get claimed by them.
-         */
+        // Do not remove claimedTrackables here.
+        // Otherwise the same physical marker can be re-claimed by the other player.
         if (claimedTrackables.TryGetValue(trackableKey, out string claimedByKey))
         {
             if (!lostTimers.ContainsKey(claimedByKey))
@@ -222,8 +212,11 @@ public class ImageTrackingManager : MonoBehaviour
 
     private void TryHandleTrackedImage(ARTrackedImage trackedImage, string eventType)
     {
-        if (trackedImage == null) return;
-        if (trackedImage.trackingState != TrackingState.Tracking) return;
+        if (trackedImage == null)
+            return;
+
+        if (trackedImage.trackingState != TrackingState.Tracking)
+            return;
 
         if (gameStateManager == null)
         {
@@ -232,7 +225,6 @@ public class ImageTrackingManager : MonoBehaviour
         }
 
         PlayerState currentPlayer = gameStateManager.CurrentPlayer;
-
         if (currentPlayer == null)
         {
             Debug.LogWarning("[ITM] No current player.");
@@ -242,39 +234,26 @@ public class ImageTrackingManager : MonoBehaviour
         if (gameStateManager.CurrentPhase != GameStateManager.GamePhase.PlayerTurn)
             return;
 
-        string cardName = trackedImage.referenceImage.name;
+        string rawCardName = trackedImage.referenceImage.name;
+        string cardName = NormalizeCardName(rawCardName);
         int playerIndex = currentPlayer.PlayerIndex;
-
         string key = MakeKey(playerIndex, cardName);
         string trackableKey = MakeTrackableKey(trackedImage);
 
-        Debug.Log(
-            $"[ITM] {eventType} event: {cardName} | " +
-            $"player:{currentPlayer.PlayerName} | key:{key} | trackable:{trackableKey}"
-        );
+        Debug.Log($"[ITM] {eventType} event: raw:{rawCardName} normalized:{cardName} | player:{currentPlayer.PlayerName} | key:{key} | trackable:{trackableKey}");
 
-        /*
-         * DEMO-SAFE PLAYER CARD LOCK.
-         *
-         * Player 1:
-         * - HoodedRouge
-         * - BirdKnight
-         *
-         * Player 2:
-         * - ArmoredGuard
-         * - Paladin
-         */
-        if (!IsCardAllowedForPlayer(playerIndex, cardName))
+        if (lockedPlacedCards.Contains(key))
         {
-            Debug.Log(
-                $"[ITM] Ignoring {cardName}. It is not allowed for {currentPlayer.PlayerName}."
-            );
+            Debug.Log($"[ITM] Ignoring {cardName}. {key} is already world-locked.");
             return;
         }
 
-        /*
-         * Physical marker ownership check.
-         */
+        if (!IsCardAllowedForPlayer(playerIndex, cardName))
+        {
+            Debug.Log($"[ITM] Ignoring {cardName}. It is not allowed for {currentPlayer.PlayerName}.");
+            return;
+        }
+
         if (claimedTrackables.TryGetValue(trackableKey, out string claimedByKey))
         {
             if (claimedByKey != key)
@@ -283,7 +262,6 @@ public class ImageTrackingManager : MonoBehaviour
                     $"[ITM] Ignoring {cardName}. This physical marker is already claimed by {claimedByKey}, " +
                     $"but current player would claim it as {key}."
                 );
-
                 return;
             }
         }
@@ -291,118 +269,101 @@ public class ImageTrackingManager : MonoBehaviour
         if (scanCooldowns.ContainsKey(key))
             return;
 
-        /*
-         * Existing card for this player.
-         * This mostly matters for revived cards.
-         */
         if (spawnedCharacters.TryGetValue(key, out CardCharacter existingCharacter))
         {
-            if (existingCharacter == null)
-            {
-                spawnedCharacters.Remove(key);
-                spawnedObjects.Remove(key);
-                return;
-            }
-
-            if (currentPlayer.HandCards.Contains(existingCharacter))
-            {
-                if (!currentPlayer.CanAfford(PlayerState.PlaceCost))
-                {
-                    Debug.Log($"[ITM] {currentPlayer.PlayerName} cannot afford to re-place {cardName}.");
-                    return;
-                }
-
-                Debug.Log($"[ITM] Re-placing existing {cardName} for {currentPlayer.PlayerName}.");
-
-                MoveExistingCardToMarker(existingCharacter, trackedImage);
-
-                scanCooldowns[key] = scanCooldownSeconds;
-                claimedTrackables[trackableKey] = key;
-
-                gameStateManager.OnCardScanned(existingCharacter);
-                return;
-            }
-
-            if (currentPlayer.FieldCards.Contains(existingCharacter))
-            {
-                Debug.Log($"[ITM] Ignoring {cardName} — already on {currentPlayer.PlayerName}'s field.");
-                return;
-            }
-
-            if (currentPlayer.DeadCards.Contains(existingCharacter))
-            {
-                Debug.Log($"[ITM] Ignoring {cardName} — it is dead. Revive it first.");
-                return;
-            }
-
-            Debug.Log($"[ITM] Ignoring {cardName} — existing object found but not in hand/field/dead.");
+            HandleExistingCharacterScan(existingCharacter, trackedImage, currentPlayer, cardName, key, trackableKey);
             return;
         }
 
-        /*
-         * Demo lock: only two cards per player.
-         * This prevents accidental third-card placement if AR misreads something.
-         */
         if (currentPlayer.FieldCards.Count >= maxCardsPerPlayer)
         {
-            Debug.Log(
-                $"[ITM] Ignoring {cardName}. {currentPlayer.PlayerName} already has " +
-                $"{currentPlayer.FieldCards.Count}/{maxCardsPerPlayer} cards on the field."
-            );
+            Debug.Log($"[ITM] Ignoring {cardName}. {currentPlayer.PlayerName} already has {currentPlayer.FieldCards.Count}/{maxCardsPerPlayer} cards on field.");
             return;
         }
 
-        /*
-         * New card for this player.
-         */
         if (!currentPlayer.CanAfford(PlayerState.PlaceCost))
         {
             Debug.Log($"[ITM] {currentPlayer.PlayerName} cannot afford to place {cardName}.");
             return;
         }
 
-        GameObject matchingPrefab = FindMatchingPrefab(cardName);
+        SpawnNewCard(trackedImage, currentPlayer, cardName, key, trackableKey);
+    }
 
-        Debug.Log(
-            $"[ITM CHECK] Marker detected: {cardName} | " +
-            $"Prefab chosen: {(matchingPrefab != null ? matchingPrefab.name : "NULL")}"
-        );
-
-        if (matchingPrefab == null)
+    private void HandleExistingCharacterScan(CardCharacter existingCharacter, ARTrackedImage trackedImage, PlayerState currentPlayer, string cardName, string key, string trackableKey)
+    {
+        if (existingCharacter == null)
         {
-            Debug.LogWarning(
-                $"[ITM] No prefab found for marker '{cardName}'. " +
-                $"Make sure prefab.name exactly matches the reference image name."
-            );
+            spawnedCharacters.Remove(key);
+            spawnedObjects.Remove(key);
+            lockedPlacedCards.Remove(key);
             return;
         }
 
-        Debug.Log($"[ITM] Spawning NEW {cardName} for {currentPlayer.PlayerName}.");
+        if (IsCardOnEitherField(existingCharacter))
+        {
+            lockedPlacedCards.Add(key);
+            Debug.Log($"[ITM] Ignoring {cardName} — already on field and locked.");
+            return;
+        }
 
-        GameObject spawned = Instantiate(
-            matchingPrefab,
-            trackedImage.transform.position,
-            trackedImage.transform.rotation
-        );
+        if (currentPlayer.DeadCards.Contains(existingCharacter))
+        {
+            Debug.Log($"[ITM] Ignoring {cardName} — dead card must be revived first.");
+            return;
+        }
 
-        // Keep your original 180-degree model flip.
+        if (currentPlayer.HandCards.Contains(existingCharacter))
+        {
+            if (!currentPlayer.CanAfford(PlayerState.PlaceCost))
+            {
+                Debug.Log($"[ITM] {currentPlayer.PlayerName} cannot afford to re-place {cardName}.");
+                return;
+            }
+
+            Debug.Log($"[ITM] Re-placing existing {cardName} for {currentPlayer.PlayerName}.");
+
+            MoveExistingCardToMarker(existingCharacter, trackedImage);
+            scanCooldowns[key] = scanCooldownSeconds;
+            claimedTrackables[trackableKey] = key;
+
+            gameStateManager.OnCardScanned(existingCharacter);
+            LockPlacedCard(existingCharacter, key);
+            return;
+        }
+
+        Debug.Log($"[ITM] Ignoring {cardName} — existing object found but not in hand/field/dead.");
+    }
+
+    private void SpawnNewCard(ARTrackedImage trackedImage, PlayerState currentPlayer, string cardName, string key, string trackableKey)
+    {
+        GameObject matchingPrefab = FindMatchingPrefab(cardName);
+
+        Debug.Log($"[ITM CHECK] Marker detected: {cardName} | Prefab chosen: {(matchingPrefab != null ? matchingPrefab.name : "NULL")}");
+
+        if (matchingPrefab == null)
+        {
+            Debug.LogWarning($"[ITM] No prefab found for normalized marker '{cardName}'. Check prefab names in ourModelPrefabs.");
+            return;
+        }
+
+        GameObject spawned = Instantiate(matchingPrefab, trackedImage.transform.position, trackedImage.transform.rotation);
+        spawned.name = $"{cardName}_{currentPlayer.PlayerName}";
+        spawned.transform.SetParent(null, true);
         spawned.transform.rotation *= Quaternion.Euler(0f, 180f, 0f);
 
         CardCharacter character = spawned.GetComponent<CardCharacter>();
 
-        Debug.Log(
-            $"[ITM CHECK] Spawned object: {spawned.name} | " +
-            $"CardCharacter name: {(character != null ? character.characterName : "NULL")}"
-        );
+        Debug.Log($"[ITM CHECK] Spawned object: {spawned.name} | CardCharacter name: {(character != null ? character.characterName : "NULL")}");
 
         if (character == null)
         {
-            Debug.LogWarning($"[ITM] Spawned prefab '{cardName}' has no CardCharacter component.");
+            Debug.LogWarning($"[ITM] Spawned prefab '{cardName}' has no CardCharacter component on the root.");
             Destroy(spawned);
             return;
         }
 
-        character.SetOwner(playerIndex);
+        character.SetOwner(currentPlayer.PlayerIndex);
 
         spawnedObjects[key] = spawned;
         spawnedCharacters[key] = character;
@@ -413,18 +374,132 @@ public class ImageTrackingManager : MonoBehaviour
             combatManager.characters.Add(character);
 
         gameStateManager.OnCardScanned(character);
+        LockPlacedCard(character, key);
+    }
+
+    private void MoveExistingCardToMarker(CardCharacter character, ARTrackedImage trackedImage)
+    {
+        if (character == null || trackedImage == null)
+            return;
+
+        if (IsCardOnEitherField(character))
+        {
+            Debug.LogWarning($"[ITM] Blocked teleport attempt for field card: {character.characterName}");
+            return;
+        }
+
+        GameObject go = character.gameObject;
+        go.SetActive(true);
+        go.transform.SetParent(null, true);
+        go.transform.position = trackedImage.transform.position;
+        go.transform.rotation = trackedImage.transform.rotation * Quaternion.Euler(0f, 180f, 0f);
+    }
+
+    private void LockPlacedCard(CardCharacter character, string key)
+    {
+        if (character == null)
+            return;
+
+        character.transform.SetParent(null, true);
+        lockedPlacedCards.Add(key);
+        lostTimers.Remove(key);
+
+        Debug.Log($"[ITM] {character.characterName} world-locked. key={key} pos={character.transform.position} rot={character.transform.rotation.eulerAngles}");
+    }
+
+    public void DetachPlacedCard(CardCharacter character)
+    {
+        if (character == null)
+            return;
+
+        character.transform.SetParent(null, true);
+
+        string key = FindKeyForCharacter(character);
+        if (!string.IsNullOrEmpty(key))
+            LockPlacedCard(character, key);
+        else
+            Debug.LogWarning($"[ITM] DetachPlacedCard could not find key for {character.characterName}.");
+    }
+
+    public void OnCardDied(CardCharacter character)
+    {
+        string key = FindKeyForCharacter(character);
+        if (string.IsNullOrEmpty(key))
+            return;
+
+        lockedPlacedCards.Remove(key);
+        lostTimers.Remove(key);
+        Debug.Log($"[ITM] {character.characterName} died. Unlocked {key} so it can be revived/re-scanned later.");
+    }
+
+    public void UnlockForRevive(CardCharacter character)
+    {
+        string key = FindKeyForCharacter(character);
+        if (string.IsNullOrEmpty(key))
+        {
+            Debug.LogWarning($"[ITM] UnlockForRevive could not find key for {character?.characterName ?? "NULL"}.");
+            return;
+        }
+
+        lockedPlacedCards.Remove(key);
+        scanCooldowns.Remove(key);
+        lostTimers.Remove(key);
+
+        // Do not call ResetForNewGame here.
+        // Revive moves the card back to hand; scanning places it and PlayerState.TryPlaceCard resets/shows it.
+        if (character != null)
+            character.gameObject.SetActive(true);
+
+        Debug.Log($"[ITM] Revive unlocked {key}. Scan the physical card to place it again.");
+    }
+
+    public void ClearAllSpawnedCards()
+    {
+        foreach (GameObject go in spawnedObjects.Values)
+        {
+            if (go != null)
+                Destroy(go);
+        }
+
+        // Safety net: destroy any card objects that were not in the dictionary.
+        foreach (CardCharacter character in FindObjectsOfType<CardCharacter>(true))
+        {
+            if (character != null)
+                Destroy(character.gameObject);
+        }
+
+        spawnedObjects.Clear();
+        spawnedCharacters.Clear();
+        scanCooldowns.Clear();
+        lostTimers.Clear();
+        claimedTrackables.Clear();
+        lockedPlacedCards.Clear();
+
+        if (combatManager != null)
+            combatManager.characters.Clear();
+
+        Debug.Log("[ITM] Cleared all spawned card objects and tracking dictionaries.");
+    }
+
+    private bool IsCardOnEitherField(CardCharacter character)
+    {
+        if (character == null || gameStateManager == null)
+            return false;
+
+        bool p1 = gameStateManager.Player1 != null && gameStateManager.Player1.FieldCards.Contains(character);
+        bool p2 = gameStateManager.Player2 != null && gameStateManager.Player2.FieldCards.Contains(character);
+        return p1 || p2;
     }
 
     private bool IsCardAllowedForPlayer(int playerIndex, string cardName)
     {
-        // Player 1's demo deck
+        // Demo-safe lock. This prevents Player 1's visible marker from becoming Player 2's card.
         if (playerIndex == 0)
         {
             return cardName == "HoodedRouge" ||
                    cardName == "BirdKnight";
         }
 
-        // Player 2's demo deck
         if (playerIndex == 1)
         {
             return cardName == "ArmoredGuard" ||
@@ -434,17 +509,21 @@ public class ImageTrackingManager : MonoBehaviour
         return false;
     }
 
-    private void MoveExistingCardToMarker(CardCharacter character, ARTrackedImage trackedImage)
+    private string NormalizeCardName(string rawName)
     {
-        if (character == null || trackedImage == null) return;
+        if (string.IsNullOrEmpty(rawName))
+            return rawName;
 
-        GameObject go = character.gameObject;
+        if (rawName.Contains("HoodedRouge") || rawName.Contains("HoodedRogue")) return "HoodedRouge";
+        if (rawName.Contains("BirdKnight")) return "BirdKnight";
+        if (rawName.Contains("ArmoredGuard")) return "ArmoredGuard";
+        if (rawName.Contains("Paladin")) return "Paladin";
 
-        go.transform.SetParent(null, true);
-        go.transform.position = trackedImage.transform.position;
-        go.transform.rotation = trackedImage.transform.rotation * Quaternion.Euler(0f, 90f, 0f);
+        int underscoreIndex = rawName.IndexOf('_');
+        if (underscoreIndex > 0)
+            return rawName.Substring(0, underscoreIndex);
 
-        go.SetActive(true);
+        return rawName;
     }
 
     private string MakeKey(int playerIndex, string cardName)
@@ -457,38 +536,32 @@ public class ImageTrackingManager : MonoBehaviour
         return trackedImage.trackableId.ToString();
     }
 
-    private string GetCurrentPlayerKey(string cardName)
+    private string FindKeyForCharacter(CardCharacter character)
     {
-        if (gameStateManager == null) return null;
-        if (gameStateManager.CurrentPlayer == null) return null;
+        if (character == null)
+            return null;
 
-        return MakeKey(gameStateManager.CurrentPlayer.PlayerIndex, cardName);
+        foreach (KeyValuePair<string, CardCharacter> pair in spawnedCharacters)
+        {
+            if (pair.Value == character)
+                return pair.Key;
+        }
+
+        return null;
     }
 
     private GameObject FindMatchingPrefab(string cardName)
     {
         foreach (GameObject prefab in ourModelPrefabs)
         {
-            if (prefab != null && prefab.name == cardName)
+            if (prefab == null)
+                continue;
+
+            string prefabCardName = NormalizeCardName(prefab.name);
+            if (prefabCardName == cardName)
                 return prefab;
         }
 
         return null;
-    }
-
-    /*
-     * GameStateManager still calls this after successful placement.
-     * Keep it so GameStateManager compiles.
-     *
-     * Cards are already instantiated into world space, so this just makes
-     * absolutely sure the card is independent from AR tracking.
-     */
-    public void DetachPlacedCard(CardCharacter character)
-    {
-        if (character == null) return;
-
-        character.transform.SetParent(null, true);
-
-        Debug.Log($"[ITM] {character.characterName} placed as independent world object.");
     }
 }

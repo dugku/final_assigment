@@ -315,6 +315,8 @@ public class GameStateManager : MonoBehaviour
 
         if (revived)
         {
+            imageTrackingManager?.UnlockForRevive(card);
+
             UpdateCardFacing();
 
             gameUI?.ShowMessage($"{card.characterName} revived! Scan it to place.");
@@ -362,10 +364,11 @@ public class GameStateManager : MonoBehaviour
         else
             Player2.NotifyCardDied(card);
 
+        imageTrackingManager?.OnCardDied(card);
+
         if (SelectedAttacker == card || SelectedTarget == card)
             ClearAttackSelection();
 
-        // FIX: retarget surviving cards after death.
         UpdateCardFacing();
 
         gameUI?.RefreshUI(CurrentPlayer, AttackingUnlocked);
@@ -436,5 +439,12 @@ public class GameStateManager : MonoBehaviour
         Debug.Log($"=== GAME OVER — {winner?.PlayerName ?? "Draw"} wins! ===");
 
         gameUI?.OnEndGame(winner);
+    }
+
+
+    private void OnDestroy()
+    {
+        if (Instance == this)
+            Instance = null;
     }
 }

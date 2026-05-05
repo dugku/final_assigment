@@ -261,7 +261,18 @@ public class GameUI : MonoBehaviour
     private void RestartScene()
     {
         Debug.Log("[GameUI] Restarting scene.");
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+    
+        ImageTrackingManager itm = FindObjectOfType<ImageTrackingManager>();
+        if (itm != null)
+            itm.ClearAllSpawnedCards();
+    
+        UnityEngine.XR.ARFoundation.ARSession session =
+            FindObjectOfType<UnityEngine.XR.ARFoundation.ARSession>();
+    
+        if (session != null)
+            session.Reset();
+    
+        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex, LoadSceneMode.Single);
     }
 
     private void BuildTurnPanel(bool attackUnlocked)
